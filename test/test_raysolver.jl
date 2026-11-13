@@ -577,3 +577,123 @@ end
   @test length(arr2) > 0
   @test all(isfinite(a.t) && isfinite(abs(a.ϕ)) for a ∈ arr2)
 end
+
+@testitem "raysolver-arcs-select" begin
+  using UnderwaterAcoustics
+  import AcousticRayTracers: _use_arcs
+  env = UnderwaterEnvironment(bathymetry=20)
+  @test _use_arcs(RaySolver(env))
+  @test _use_arcs(RaySolver(env; method=:arcs))
+  @test !_use_arcs(RaySolver(env; method=:ode))
+  @test !_use_arcs(RaySolver(env; backscatter=true))
+  env2 = UnderwaterEnvironment(bathymetry=20,
+    soundspeed=SampledField([1500.0, 1490.0, 1510.0]; z=[0.0, -10.0, -20.0]))
+  @test _use_arcs(RaySolver(env2))
+  env3 = UnderwaterEnvironment(bathymetry=20,
+    soundspeed=SampledField([1500.0, 1490.0, 1510.0, 1520.0]; z=0.0:-10.0:-30.0,
+      interp=UnderwaterAcoustics.CubicSpline()))
+  @test !_use_arcs(RaySolver(env3))
+  env4 = UnderwaterEnvironment(bathymetry=SampledField([20, 25]; x=[0, 100]))
+  @test !_use_arcs(RaySolver(env4))
+  @test_throws ErrorException RaySolver(env3; method=:arcs)
+  @test_throws ErrorException RaySolver(env4; method=:arcs)
+  @test_throws ErrorException RaySolver(env; method=:arcs, backscatter=true)
+  @test_throws ErrorException RaySolver(env; method=:foo)
+end
+
+@testitem "raysolver-arcs-pekeris" begin
+  # isovelocity: exact arcs must reproduce the Pekeris ray tracer
+  using UnderwaterAcoustics
+  env = UnderwaterEnvironment(bathymetry=20, soundspeed=1500, seabed=SandySilt)
+  tx = AcousticSource(0.0, -5.0, 1000.0)
+  rx = AcousticReceiver(100.0, -10.0)
+  arr = @inferred arrivals(RaySolver(env; method=:arcs, min_amplitude=0.0), tx, rx)
+  ref = arrivals(PekerisRayTracer(env; max_bounces=8), tx, rx)
+  for a ∈ ref
+    i = findfirst(b -> b.ns == a.ns && b.nb == a.nb && isapprox(b.t, a.t; atol=1e-9), arr)
+    @test i !== nothing
+    i === nothing && continue
+    @test arr[i].ϕ ≈ a.ϕ rtol=1e-6
+    @test arr[i].θₛ ≈ a.θₛ atol=1e-9
+    @test arr[i].θᵣ ≈ a.θᵣ atol=1e-9
+  end
+end
+
+@testitem "raysolver-arcs-vs-ode" begin
+  # piecewise-linear profiles: every arrival found by integrating the ray
+  # equations must also be found by exact arcs, with the same timing, amplitude,
+  # phase (including caustic phase shifts) and angles. Arrivals near the
+  # min_amplitude cutoff are skipped, since the two methods apply it at
+  # different points along the ray. The SSPs extend below the seabed with the
+  # same slope, so that no gradient discontinuity sits on the boundary.
+  using UnderwaterAcoustics
+  function compare(env, tx, rx)
+    arcs = arrivals(RaySolver(env; method=:arcs), tx, rx; paths=false)
+    ode = arrivals(RaySolver(env; method=:ode), tx, rx; paths=false)
+    strong(a) = abs(a.ϕ) > 1e-5
+    @test length(ode) > 0
+    @test count(strong, arcs) ≥ count(strong, ode)
+    for a ∈ filter(strong, ode)
+      # same bounce counts and launch direction, nearest in time
+      cands = filter(b -> b.ns == a.ns && b.nb == a.nb && sign(b.θₛ) == sign(a.θₛ), arcs)
+      @test !isempty(cands)
+      isempty(cands) && continue
+      b = cands[argmin([abs(b.t - a.t) for b ∈ cands])]
+      @test b.t ≈ a.t atol=1e-5
+      @test abs(b.ϕ) ≈ abs(a.ϕ) rtol=0.02
+      @test abs(angle(b.ϕ / a.ϕ)) < 0.05
+      @test b.θₛ ≈ a.θₛ atol=1e-3
+      @test b.θᵣ ≈ a.θᵣ atol=1e-3
+    end
+  end
+  # downward refracting, interior knot (the BELLHOP-checked environment above)
+  env = UnderwaterEnvironment(bathymetry=60.0,
+    soundspeed=SampledField([1540.0, 1510.0, 1500.0]; z=[0.0, -30.0, -65.0]), seabed=RigidBoundary)
+  compare(env, AcousticSource(0.0, -20.0, 5000.0), AcousticReceiver(100.0, -20.0))
+  compare(env, AcousticSource(0.0, -20.0, 5000.0), AcousticReceiver(1000.0, -45.0))
+  # sound channel: refraction turns and caustics
+  env = UnderwaterEnvironment(bathymetry=200.0,
+    soundspeed=SampledField([1520.0, 1490.0, 1510.0, 1512.0]; z=[0.0, -100.0, -200.0, -210.0]),
+    seabed=SandySilt)
+  compare(env, AcousticSource(0.0, -90.0, 1000.0), AcousticReceiver(2000.0, -120.0))
+  # soundspeed maximum between source and receiver
+  env = UnderwaterEnvironment(bathymetry=100.0,
+    soundspeed=SampledField([1500.0, 1520.0, 1500.0, 1496.0]; z=[0.0, -50.0, -100.0, -110.0]),
+    seabed=SandySilt)
+  compare(env, AcousticSource(0.0, -20.0, 1000.0), AcousticReceiver(500.0, -80.0))
+end
+
+@testitem "raysolver-arcs-paths" begin
+  using UnderwaterAcoustics
+  env = UnderwaterEnvironment(bathymetry=200.0,
+    soundspeed=SampledField([1520.0, 1490.0, 1510.0, 1512.0]; z=[0.0, -100.0, -200.0, -210.0]),
+    seabed=SandySilt)
+  pm = RaySolver(env)
+  tx = AcousticSource(0.0, -90.0, 1000.0)
+  rx = AcousticReceiver(2000.0, -120.0)
+  arr = @inferred arrivals(pm, tx, rx)
+  @test length(arr) > 0
+  @test all(a -> a.path[1] == (x=0.0, y=0.0, z=-90.0), arr)
+  @test all(a -> a.path[end] == (x=2000.0, y=0.0, z=-120.0), arr)
+  @test all(a -> all(p -> -200 - 1e-6 ≤ p.z ≤ 1e-6, a.path), arr)
+  @test all(a -> issorted([p.x for p ∈ a.path]), arr)
+  @test all(a -> length(a.path) ≥ 2000 / 20, arr)     # ds = 20 m (water depth / 10)
+  arr2 = arrivals(pm, tx, rx; paths=false)
+  @test all(a -> isempty(a.path), arr2)
+  @test [a.t for a ∈ arr2] == [a.t for a ∈ arr]
+end
+
+@testitem "∂raysolver-arcs" begin
+  using UnderwaterAcoustics
+  using DifferentiationInterface
+  import ForwardDiff, FiniteDifferences
+  fd = AutoFiniteDifferences(fdm=FiniteDifferences.central_fdm(5, 1))
+  function ℳ((c1, c2, c3, D, R, d1))
+    env = UnderwaterEnvironment(bathymetry=D,
+      soundspeed=SampledField([c1, c2, c3]; z=[0.0, -30.0, -65.0]), seabed=SandySilt)
+    pm = RaySolver(env; method=:arcs)
+    transmission_loss(pm, AcousticSource((x=0.0, z=-d1), 1000.0), AcousticReceiver((x=R, z=-40.0)))
+  end
+  x = [1540.0, 1510.0, 1500.0, 60.0, 300.0, 20.0]
+  @test gradient(ℳ, AutoForwardDiff(), x) ≈ gradient(ℳ, fd, x) rtol=1e-4
+end

@@ -30,16 +30,22 @@ Base.@kwdef struct RaySolver{T1,T2,T3} <: AbstractRayPropagationModel
   rmax::Float64 = 0.0
   scatterers::T3 = nothing
   ntasks::Int = 0
-  function RaySolver(env, nbeams, min_angle, max_angle, ds, atol, rugosity, min_amplitude, solver, solver_tol, backscatter, rmin, rmax, scatterers, ntasks)
+  method::Symbol = :auto
+  function RaySolver(env, nbeams, min_angle, max_angle, ds, atol, rugosity, min_amplitude, solver, solver_tol, backscatter, rmin, rmax, scatterers, ntasks, method)
     nbeams < 0 && (nbeams = 0)
     -π/2 ≤ min_angle ≤ π/2 || error("min_angle should be between -π/2 and π/2")
     -π/2 ≤ max_angle ≤ π/2 || error("max_angle should be between -π/2 and π/2")
     min_angle < max_angle || error("max_angle should be more than min_angle")
     rmin ≤ 0 || error("rmin should be non-positive")
     rmax ≥ 0 || error("rmax should be non-negative")
+    method ∈ (:auto, :arcs, :ode) || error("method should be :auto, :arcs or :ode")
     solver = something(solver, is_isovelocity(env) ? Tsit5() : Rosenbrock23())
     scatterers === nothing && (scatterers = _scatterer_set(env))
-    new{typeof(env),typeof(solver),typeof(scatterers)}(env, nbeams, min_angle, max_angle, ds, atol, rugosity, min_amplitude, solver, solver_tol, backscatter, rmin, rmax, scatterers, ntasks)
+    if method === :arcs
+      reason = _arcs_unsupported(env, backscatter, scatterers)
+      reason === nothing || error("method = :arcs: " * reason)
+    end
+    new{typeof(env),typeof(solver),typeof(scatterers)}(env, nbeams, min_angle, max_angle, ds, atol, rugosity, min_amplitude, solver, solver_tol, backscatter, rmin, rmax, scatterers, ntasks, method)
   end
 end
 
@@ -67,6 +73,23 @@ Supported keyword arguments:
 - `rmax`: right edge of modeling domain in m (default: 0, auto = query range)
 - `ntasks`: number of parallel tasks to use (default: 0, auto = number of threads;
   1 = serial, useful for benchmarking and for AD tools that dislike threads)
+- `method`: eigenray method for `arrivals` (default: `:auto`); `:ode` integrates
+  the ray equations numerically, `:arcs` uses exact circular-arc rays, and
+  `:auto` picks `:arcs` whenever the environment supports it
+
+With `method = :arcs`, eigenrays are computed exactly, without integrating the
+ray equations. This requires a range-independent environment with flat surface
+and seabed, a soundspeed that is constant or a `SampledField` in depth with
+linear interpolation, no scatterers, and `backscatter = false`. In each layer of
+such a profile, rays are circular arcs, so their range, travel time and path
+length have closed forms in the ray parameter; eigenrays are found per ray
+family (launch direction and number of turning events) by a launch-angle scan
+and bisection. This is typically orders of magnitude faster per receiver than
+`:ode`. `nbeams` sets the number of launch angles scanned per direction
+(default 4000), `ds` the spacing of points along returned ray paths, and
+`min_amplitude` is checked at the receiver; `atol`, `rugosity`, `solver`,
+`solver_tol` and `ntasks` do not apply. Fields on an `AcousticReceiverGrid2D`
+always use Gaussian beams traced with `:ode`.
 
 If the environment contains scatterers (`env.scatterers`), rays reflect off them
 using the scatterer's boundary condition. With `backscatter` enabled, rays are
@@ -89,6 +112,10 @@ function UnderwaterAcoustics.arrivals(pm::RaySolver, tx::AbstractAcousticSource,
   pm.backscatter && return _arrivals_backscatter(pm, tx, rx; paths, ztol)
   p2 = location(rx)
   p1 = location(tx)
+  T1 = promote_type(env_type(pm.env), eltype(location(tx)), typeof(p2.x), typeof(p2.z))
+  T2 = typeof(RayArrival(zero(T1), zero(Complex{T1}), 0, 0, zero(T1), zero(T1),
+    Array{@NamedTuple{x::T1,y::T1,z::T1}}(undef, 0)))
+  _use_arcs(pm) && return _arcs_arrivals(T1, T2, pm, tx, rx, paths)
   R = abs(p2.x - p1.x)
   nbeams = pm.nbeams
   if nbeams == 0
@@ -105,9 +132,6 @@ function UnderwaterAcoustics.arrivals(pm::RaySolver, tx::AbstractAcousticSource,
   # crossings (rather than ray endpoints) also finds arrivals on rays that
   # refract back down-range after passing the receiver.
   rdom = p2.x + 0.1   # trace slightly past rx so the range crossing is recorded before termination
-  T1 = promote_type(env_type(pm.env), eltype(location(tx)), typeof(p2.x), typeof(p2.z))
-  T2 = typeof(RayArrival(zero(T1), zero(Complex{T1}), 0, 0, zero(T1), zero(T1),
-    Array{@NamedTuple{x::T1,y::T1,z::T1}}(undef, 0)))
   erays = _fan_search(T2, pm, tx, collect(T1, θ), T1(rdom), T1(p2.x), T1(p2.z), ds, ztol, paths; edges=true)
   sort!(erays; by=Base.Fix2(getfield, :t))
 end

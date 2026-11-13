@@ -9,5 +9,6 @@ using UnderwaterAcoustics: is_range_dependent, is_constant, value, in_units, db2
 export RaySolver
 
 include("RaySolver.jl")
+include("arcs.jl")
 
 end # module
