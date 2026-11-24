@@ -468,17 +468,18 @@ end
 # dp/ds = -∂²c ξ² q through dz/ds = c ζ gives Δp = -q ξ² Δ(∂c/∂z) / (c |ζ|),
 # independent of travel direction. Diverges at grazing (ray turning at the knot);
 # skipped for |sin θ| ≤ 1e-3, consistent with _reflect_pq. If the crossing point
-# lies at or beyond a boundary (a knot depth can coincide with the seabed or
-# surface, e.g. at a seamount top), the ray reflects rather than transmits:
+# lies at, within 1e-3 of, or beyond a boundary (a knot depth can coincide with
+# the seabed or surface, e.g. at a seamount top, or at the seabed where it is
+# shallower than elsewhere), the ray reflects rather than transmits:
 # terminate with the corresponding boundary event instead, as the restart could
 # otherwise land outside the water column and tunnel through the boundary.
 function _knot_jump!(i, (z_k, g₋, g₊, c_k), a, b, evref)
   u = i.u   # (r, z, ξ, ζ, t, p, q)
-  if u[2] ≥ value(a, (u[1], 0.0, 0.0))
+  if u[2] ≥ value(a, (u[1], 0.0, 0.0)) - 1e-3
     evref[] = 1
     terminate!(i)
     return
-  elseif u[2] ≤ -value(b, (u[1], 0.0, 0.0))
+  elseif u[2] ≤ -value(b, (u[1], 0.0, 0.0)) + 1e-3
     evref[] = 2
     terminate!(i)
     return
