@@ -503,11 +503,8 @@ function _prepare_trace(T, pm)
     # (Interpolations.jl #645). Where the water column extends beyond the
     # domain, the flat-extrapolated region is genuinely reachable and is left
     # untouched (the edge knot is then handled as a gradient discontinuity).
-    # Where the domain extends below the deepest seabed, the clamp sits at the
-    # seabed instead, so that integration steps overshooting the bottom do not
-    # see the slope of a sub-seabed segment (knot on the seabed, issue #34)
     z1, z2 = Float64.(extrema(ss.zrange))
-    zb = -ForwardDiff.value(maximum(pm.env.bathymetry))   # plain float: clamp position, not differentiated
+    zb = -ForwardDiff.value(maximum(pm.env.bathymetry))
     zlo = z1 ≤ zb + 1e-3 ? max(z1, zb) + 1e-6 : -Inf
     zhi = z2 ≥ minimum(pm.env.altimetry) - 1e-3 ? z2 - 1e-6 : Inf
     c = z -> begin
@@ -625,9 +622,6 @@ function _reflect_pq(qp, q, c, t̂, n̂, κ, gc)
   qp + q * RN
 end
 
-# soundspeed gradient ∂c/∂z at boundary depth zb, taken just inside the water
-# (n̂z: vertical component of the into-water normal); at an SSP knot on the
-# boundary, ∂ would return the mean of the water-side and beyond-boundary slopes
 _water_side_gradient(∂c, zb, n̂z) = ∂c(zb + 1e-6 * sign(n̂z))
 
 # trace a ray starting at tx1 with angle θ until it reaches rmax. ds controls the

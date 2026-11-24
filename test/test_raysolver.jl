@@ -431,25 +431,30 @@ end
 
 @testitem "raysolver-seabed-knot" begin
   using UnderwaterAcoustics
-  # regression (issue #34): an SSP knot exactly on the seabed with a slope
-  # change across it used to bias bottom-reflected amplitudes by up to ~12%.
-  # The SSP below the seabed cannot affect rays, so a profile with a slope
-  # change at the seabed and one that continues the water-side slope below it
-  # must give the same arrivals
-  for (cs, ckink, csmooth, D, tx, rx) ∈ (
-      ([1520.0, 1490.0, 1510.0], 1511.0, 1512.0, 200.0, (0.0, -90.0), (2000.0, -120.0)),
-      ([1500.0, 1520.0, 1500.0], 1499.0, 1496.0, 100.0, (0.0, -20.0), (500.0, -80.0)))
-    zs = [0.0, -D/2, -D, -D-10]
-    kink, smooth = map((ckink, csmooth)) do c4
-      env = UnderwaterEnvironment(bathymetry=D, soundspeed=SampledField([cs; c4]; z=zs), seabed=SandySilt)
-      arrivals(RaySolver(env), AcousticSource(tx..., 1000.0), AcousticReceiver(rx...); paths=false)
-    end
-    @test length(kink) == length(smooth)
-    @test count(a -> a.nb > 0, kink) ≥ 5
-    for a ∈ kink
-      # arrivals with different bounce counts can coincide in time, so match
-      # on (ns, nb) and the nearest arrival time rather than on sort order
-      m = filter(b -> (b.ns, b.nb) == (a.ns, a.nb), smooth)
+  cases = (
+    (UnderwaterEnvironment(bathymetry=200.0, seabed=SandySilt,
+       soundspeed=SampledField([1520.0, 1490.0, 1510.0, 1511.0]; z=[0.0, -100.0, -200.0, -210.0])),
+     UnderwaterEnvironment(bathymetry=200.0, seabed=SandySilt,
+       soundspeed=SampledField([1520.0, 1490.0, 1510.0, 1512.0]; z=[0.0, -100.0, -200.0, -210.0])),
+     AcousticSource(0.0, -90.0, 1000.0), AcousticReceiver(2000.0, -120.0)),
+    (UnderwaterEnvironment(bathymetry=100.0, seabed=SandySilt,
+       soundspeed=SampledField([1500.0, 1520.0, 1500.0, 1499.0]; z=[0.0, -50.0, -100.0, -110.0])),
+     UnderwaterEnvironment(bathymetry=100.0, seabed=SandySilt,
+       soundspeed=SampledField([1500.0, 1520.0, 1500.0, 1496.0]; z=[0.0, -50.0, -100.0, -110.0])),
+     AcousticSource(0.0, -20.0, 1000.0), AcousticReceiver(500.0, -80.0)),
+    (UnderwaterEnvironment(bathymetry=SampledField([100.0, 100.0, 200.0]; x=[0.0, 1500.0, 3000.0]), seabed=SandySilt,
+       soundspeed=SampledField([1500.0, 1520.0, 1500.0, 1530.0]; z=[0.0, -50.0, -100.0, -200.0])),
+     UnderwaterEnvironment(bathymetry=100.0, seabed=SandySilt,
+       soundspeed=SampledField([1500.0, 1520.0, 1500.0, 1496.0]; z=[0.0, -50.0, -100.0, -110.0])),
+     AcousticSource(0.0, -20.0, 1000.0), AcousticReceiver(1000.0, -80.0)),
+  )
+  for (env, ref, tx, rx) ∈ cases
+    arr = arrivals(RaySolver(env), tx, rx; paths=false)
+    arr0 = arrivals(RaySolver(ref), tx, rx; paths=false)
+    @test length(arr) == length(arr0)
+    @test count(a -> a.nb > 0, arr) ≥ 5
+    for a ∈ arr
+      m = filter(b -> (b.ns, b.nb) == (a.ns, a.nb), arr0)
       @test !isempty(m)
       isempty(m) && continue
       b = m[argmin([abs(b.t - a.t) for b ∈ m])]
